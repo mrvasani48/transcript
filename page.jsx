@@ -1,5 +1,5 @@
 "use client";
-
+import { Analytics } from "@vercel/analytics/next"
 import { useState } from "react";
 
 function formatTime(sec) {
@@ -117,6 +117,7 @@ export default function Home() {
       <footer className="mt-12 text-muted text-xs">
         Runs on your own server — nothing is stored.
       </footer>
+            <Analytics />
     </div>
   );
 }

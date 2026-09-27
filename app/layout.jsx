@@ -1,4 +1,5 @@
 import "./globals.css";
+import { Analytics } from "@vercel/analytics/next";
 
 export const metadata = {
   title: "Transcript — pull text from any YouTube video",
@@ -8,7 +9,10 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body className="bg-bg text-ink font-serif antialiased">{children}</body>
+      <body className="bg-bg text-ink font-serif antialiased">
+        {children}
+        <Analytics />
+      </body>
     </html>
   );
 }

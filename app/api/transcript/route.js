@@ -4,6 +4,7 @@ import OpenAI, { toFile } from "openai";
 import youtubedl from "youtube-dl-exec";
 
 export const maxDuration = 60;
+export const runtime = "nodejs";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
