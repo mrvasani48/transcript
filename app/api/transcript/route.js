@@ -31,6 +31,95 @@ function extractVideoId(url) {
   }
 }
 
+async function fetchCaptionsViaInnerTube(videoId, lang) {
+  const youtube = await Innertube.create({ retrieve_player: false });
+  const info = await youtube.getInfo(videoId, { client: "IOS" });
+  const captionTracks = (info.captions?.caption_tracks || []).map((track) => ({
+    baseUrl: track.base_url,
+    languageCode: track.language_code,
+    name: { simpleText: track.name?.text || track.language_code },
+  }));
+
+  if (!captionTracks.length) {
+    throw new Error("No caption tracks returned by YouTube InnerTube");
+  }
+
+  return YoutubeTranscript.fetchTranscriptFromTracks(
+    captionTracks,
+    videoId,
+    lang ? { lang } : undefined
+  );
+}
+
+function formatTranscriptResponse(videoId, items, language) {
+  const fullText = items.map((item) => item.text).join(" ").replace(/\s+/g, " ").trim();
+
+  return NextResponse.json({
+    videoId,
+    language: items[0]?.lang || language || "unknown",
+    segments: items.map((item) => ({
+      start: item.offset / 1000,
+      duration: item.duration / 1000,
+      text: item.text,
+    })),
+    fullText,
+  });
+}
+
+async function fetchCaptions(videoId, lang) {
+  try {
+    const options = lang ? { lang } : undefined;
+    return await YoutubeTranscript.fetchTranscript(videoId, options);
+  } catch (captionError) {
+    console.error("Caption fetch failed:", {
+      videoId,
+      name: captionError?.name,
+      message: captionError?.message,
+      status: captionError?.status,
+    });
+
+    try {
+      const items = await fetchCaptionsViaInnerTube(videoId, lang);
+      if (items.length) return items;
+      throw new Error("InnerTube returned an empty transcript");
+    } catch (innerTubeError) {
+      console.error("InnerTube caption fallback failed:", {
+        videoId,
+        message: innerTubeError.message,
+      });
+      throw captionError;
+    }
+  }
+}
+
+function getAudioErrorMessage(captionError, audioError, upstreamStatus) {
+  if (audioError.message === "OPENAI_API_KEY is not configured") {
+    return "Captions are unavailable. Add OPENAI_API_KEY to the server environment variables.";
+  }
+  if (audioError.message.includes("25 MB")) {
+    return "This video's audio is larger than Whisper's 25 MB limit.";
+  }
+  if (audioError.status === 401 || audioError.name === "AuthenticationError") {
+    return "The OpenAI API key is invalid. Replace it in the server environment variables.";
+  }
+  if (audioError.status === 429) {
+    return "OpenAI rejected the request because the account has no available quota.";
+  }
+  if (upstreamStatus === 403) {
+    return "YouTube denied the audio download from this server. Try a video with captions or another video.";
+  }
+  if (audioError.message === "Streaming data not available") {
+    return "This server couldn't retrieve the video's captions or audio stream. Try again or use a video with captions.";
+  }
+  if (audioError.message.includes("Sign in") || audioError.message.includes("403")) {
+    return "YouTube blocked the audio download for this video. Try another video.";
+  }
+  if (captionError instanceof YoutubeTranscriptDisabledError) {
+    return "Captions are disabled, and audio transcription failed. Check the server error log for details.";
+  }
+  return "Couldn't fetch captions or transcribe the video's audio.";
+}
+
 async function transcribeAudio(videoId, language) {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
@@ -102,29 +191,9 @@ export async function POST(request) {
   }
 
   try {
-    const options = lang ? { lang } : undefined;
-    const items = await YoutubeTranscript.fetchTranscript(videoId, options);
-    const fullText = items.map((i) => i.text).join(" ").replace(/\s+/g, " ").trim();
-    const detectedLanguage = items[0]?.lang || lang || "unknown";
-
-    return NextResponse.json({
-      videoId,
-      language: detectedLanguage,
-      segments: items.map((i) => ({
-        start: i.offset / 1000,
-        duration: i.duration / 1000,
-        text: i.text,
-      })),
-      fullText,
-    });
-  } catch (err) {
-    console.error("Caption fetch failed:", {
-      videoId,
-      name: err?.name,
-      message: err?.message,
-      status: err?.status,
-    });
-
+    const items = await fetchCaptions(videoId, lang);
+    return formatTranscriptResponse(videoId, items, lang);
+  } catch (captionError) {
     try {
       const audioTranscript = await transcribeAudio(videoId, lang);
       return NextResponse.json({ videoId, source: "audio", ...audioTranscript });
@@ -135,27 +204,10 @@ export async function POST(request) {
         status: audioError.status || upstreamStatus,
         type: audioError.info?.error_type,
       });
-      let error = "Couldn't fetch captions or transcribe the video's audio.";
-
-      if (audioError.message === "OPENAI_API_KEY is not configured") {
-        error = "Captions are unavailable. Add OPENAI_API_KEY to .env.local and restart the server.";
-      } else if (audioError.message.includes("25 MB")) {
-        error = "This video's audio is larger than Whisper's 25 MB limit.";
-      } else if (audioError.status === 401 || audioError.name === "AuthenticationError") {
-        error = "The OpenAI API key is invalid. Replace it in .env.local and restart the server.";
-      } else if (audioError.status === 429) {
-        error = "OpenAI rejected the request because the account has no available quota.";
-      } else if (upstreamStatus === 403) {
-        error = "YouTube denied the audio download from this server. Try a video with captions or another video.";
-      } else if (audioError.message === "Streaming data not available") {
-        error = "This server couldn't retrieve the video's captions or audio stream. Try again or use a video with captions.";
-      } else if (audioError.message.includes("Sign in") || audioError.message.includes("403")) {
-        error = "YouTube blocked the audio download for this video. Try another video.";
-      } else if (err instanceof YoutubeTranscriptDisabledError) {
-        error = "Captions are disabled, and audio transcription failed. Check the server error log for details.";
-      }
-
-      return NextResponse.json({ error }, { status: 422 });
+      return NextResponse.json(
+        { error: getAudioErrorMessage(captionError, audioError, upstreamStatus) },
+        { status: 422 }
+      );
     }
   }
 }
