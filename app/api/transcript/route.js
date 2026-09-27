@@ -1,16 +1,12 @@
 import { NextResponse } from "next/server";
 import { YoutubeTranscript, YoutubeTranscriptDisabledError } from "youtube-transcript";
 import OpenAI, { toFile } from "openai";
-import path from "node:path";
-import youtubedl from "youtube-dl-exec";
+import { Innertube } from "youtubei.js";
 
 export const maxDuration = 60;
 export const runtime = "nodejs";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-const youtubeDl = youtubedl.create(
-  path.join(process.cwd(), "node_modules", "youtube-dl-exec", "bin", "yt-dlp")
-);
 
 function extractVideoId(url) {
   try {
@@ -43,33 +39,33 @@ async function transcribeAudio(videoId, language) {
 
   const chunks = [];
   let totalBytes = 0;
-  const audioProcess = youtubeDl.exec(`https://www.youtube.com/watch?v=${videoId}`, {
-    format: "bestaudio[ext=m4a]/bestaudio",
-    output: "-",
-    quiet: true,
-    noWarnings: true,
+  const youtube = await Innertube.create({ retrieve_player: false });
+  const info = await youtube.getInfo(videoId, { client: "IOS" });
+  const format = info.chooseFormat({ type: "audio", quality: "best", format: "any" });
+  const audioStream = await info.download({
+    itag: format.itag,
+    type: "audio",
+    format: "any",
   });
+  const reader = audioStream.getReader();
 
-  await new Promise((resolve, reject) => {
-    audioProcess.stdout.on("data", (chunk) => {
-      totalBytes += chunk.length;
-      if (totalBytes > MAX_AUDIO_BYTES) {
-        audioProcess.kill("SIGTERM");
-        reject(new Error("Audio file is larger than Whisper's 25 MB limit"));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    audioProcess.once("error", reject);
-    audioProcess.once("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`yt-dlp exited with code ${code}`));
-    });
-  });
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > MAX_AUDIO_BYTES) {
+      await reader.cancel();
+      throw new Error("Audio file is larger than Whisper's 25 MB limit");
+    }
+    chunks.push(Buffer.from(value));
+  }
 
   const client = new OpenAI({ apiKey });
   const result = await client.audio.transcriptions.create({
-    file: await toFile(Buffer.concat(chunks), "youtube-audio.m4a"),
+    file: await toFile(
+      Buffer.concat(chunks),
+      `youtube-audio.${format.mime_type.split("/")[1].split(";")[0]}`
+    ),
     model: "whisper-1",
     response_format: "verbose_json",
     ...(language && { language }),
@@ -126,7 +122,12 @@ export async function POST(request) {
       const audioTranscript = await transcribeAudio(videoId, lang);
       return NextResponse.json({ videoId, source: "audio", ...audioTranscript });
     } catch (audioError) {
-      console.error("Audio transcription failed:", audioError);
+      const upstreamStatus = audioError.info?.response?.status;
+      console.error("Audio transcription failed:", {
+        message: audioError.message,
+        status: audioError.status || upstreamStatus,
+        type: audioError.info?.error_type,
+      });
       let error = "Couldn't fetch captions or transcribe the video's audio.";
 
       if (audioError.message === "OPENAI_API_KEY is not configured") {
@@ -137,6 +138,8 @@ export async function POST(request) {
         error = "The OpenAI API key is invalid. Replace it in .env.local and restart the server.";
       } else if (audioError.status === 429) {
         error = "OpenAI rejected the request because the account has no available quota.";
+      } else if (upstreamStatus === 403) {
+        error = "YouTube denied the audio download from this server. Try a video with captions or another video.";
       } else if (audioError.message.includes("Sign in") || audioError.message.includes("403")) {
         error = "YouTube blocked the audio download for this video. Try another video.";
       } else if (err instanceof YoutubeTranscriptDisabledError) {
