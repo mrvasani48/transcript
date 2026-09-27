@@ -118,6 +118,13 @@ export async function POST(request) {
       fullText,
     });
   } catch (err) {
+    console.error("Caption fetch failed:", {
+      videoId,
+      name: err?.name,
+      message: err?.message,
+      status: err?.status,
+    });
+
     try {
       const audioTranscript = await transcribeAudio(videoId, lang);
       return NextResponse.json({ videoId, source: "audio", ...audioTranscript });
@@ -140,6 +147,8 @@ export async function POST(request) {
         error = "OpenAI rejected the request because the account has no available quota.";
       } else if (upstreamStatus === 403) {
         error = "YouTube denied the audio download from this server. Try a video with captions or another video.";
+      } else if (audioError.message === "Streaming data not available") {
+        error = "This server couldn't retrieve the video's captions or audio stream. Try again or use a video with captions.";
       } else if (audioError.message.includes("Sign in") || audioError.message.includes("403")) {
         error = "YouTube blocked the audio download for this video. Try another video.";
       } else if (err instanceof YoutubeTranscriptDisabledError) {
