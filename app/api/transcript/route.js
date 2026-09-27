@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
 import { YoutubeTranscript, YoutubeTranscriptDisabledError } from "youtube-transcript";
 import OpenAI, { toFile } from "openai";
+import path from "node:path";
 import youtubedl from "youtube-dl-exec";
 
 export const maxDuration = 60;
 export const runtime = "nodejs";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const youtubeDl = youtubedl.create(
+  path.join(process.cwd(), "node_modules", "youtube-dl-exec", "bin", "yt-dlp")
+);
 
 function extractVideoId(url) {
   try {
@@ -39,7 +43,7 @@ async function transcribeAudio(videoId, language) {
 
   const chunks = [];
   let totalBytes = 0;
-  const audioProcess = youtubedl.exec(`https://www.youtube.com/watch?v=${videoId}`, {
+  const audioProcess = youtubeDl.exec(`https://www.youtube.com/watch?v=${videoId}`, {
     format: "bestaudio[ext=m4a]/bestaudio",
     output: "-",
     quiet: true,
