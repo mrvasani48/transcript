@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a Next.js App Router application that accepts a YouTube video URL and returns a timestamped transcript. It prefers existing YouTube captions, trying the standard caption lookup first and then an iOS InnerTube caption-track lookup. If both caption sources fail, it attempts to download audio and transcribe it with OpenAI Whisper.
+This is a Next.js App Router application that accepts a YouTube video URL and returns a timestamped transcript. It prefers existing YouTube captions, trying a separately deployable Python transcript service when configured, then JavaScript caption lookups. If those sources fail, it attempts to download audio and transcribe it with OpenAI Whisper.
 
 The app does not use a database or persist transcripts. The audio fallback sends the selected video audio to OpenAI for transcription.
 
@@ -53,6 +53,9 @@ flowchart LR
     Browser -->|Clipboard and file download| BrowserAPIs[Clipboard API / Blob URL]
     API -->|Primary caption lookup| Captions[youtube-transcript]
     API -->|iOS caption tracks and audio stream| InnerTube[youtubei.js]
+    API -->|Optional authenticated request| Python[Python FastAPI service]
+    Python -->|youtube-transcript-api| YouTubeCaptions[YouTube captions]
+    Python -->|When configured| Proxy[Rotating proxy]
     API -->|audio upload| Whisper[OpenAI Whisper API]
     Layout[app/layout.jsx] --> Analytics[Vercel Web Analytics]
     Layout --> Browser
@@ -102,6 +105,26 @@ Audio fallback is attempted only after both caption sources fail:
 
 Audio fallback depends on YouTube allowing the server to retrieve the media stream. YouTube may restrict requests from cloud-hosting IPs; metadata being available does not guarantee that the audio stream can be downloaded. Captions are therefore the preferred path.
 
+## Python Transcript Service
+
+The optional service in `transcript-python/` uses Python's `youtube-transcript-api` package. The Next.js route calls it first when `PYTHON_TRANSCRIPT_API_URL` is set. It returns the same transcript JSON shape as the browser expects. If the service URL is not configured, the route uses its existing JavaScript caption and audio paths.
+
+The Python service must be deployed separately from the Next.js app (for example, as a second Vercel project with `transcript-python/` as its Root Directory). The service is protected by a shared `TRANSCRIPT_SERVICE_TOKEN`. Set the same random token in both deployments.
+
+The Python package explicitly warns that YouTube blocks many cloud-provider IPs. A Python runtime by itself does not bypass this restriction. Configure a rotating residential proxy on the Python service using either `YOUTUBE_TRANSCRIPT_PROXY_USERNAME` and `YOUTUBE_TRANSCRIPT_PROXY_PASSWORD` (Webshare) or `YOUTUBE_TRANSCRIPT_PROXY_URL` (generic proxy). Proxy use is required by default when `VERCEL` is set; `REQUIRE_YOUTUBE_PROXY` controls this behavior.
+
+For local service development, use Python 3.12 and run:
+
+```bash
+cd transcript-python
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app:app --reload --port 8000
+```
+
+Set `PYTHON_TRANSCRIPT_API_URL=http://localhost:8000` and `TRANSCRIPT_SERVICE_TOKEN` in the Next.js environment to use the local Python service.
+
 ## Project Structure
 
 ```text
@@ -112,6 +135,9 @@ app/
   globals.css        Tailwind directives and global font rules
   layout.jsx         Root HTML layout, metadata, Vercel Analytics
   page.jsx           Client UI and transcript display/actions
+transcript-python/
+  app.py             Authenticated Python transcript service
+  requirements.txt  FastAPI and youtube-transcript-api dependencies
 package.json         Scripts and runtime/development dependencies
 package-lock.json    Locked npm dependency versions
 next.config.js       Next.js configuration
@@ -133,6 +159,8 @@ The active Next.js routes and UI are in `app/`. Root-level files with names like
 | `youtubei.js` | Retrieves iOS caption tracks and YouTube video metadata/audio for fallback paths |
 | `openai` | OpenAI client used to submit audio to Whisper |
 | `@vercel/analytics` | Vercel Web Analytics component in the root layout |
+| `youtube-transcript-api` | Python service dependency; supports residential and generic proxies |
+| `fastapi` | Python service HTTP API framework |
 
 ### Development dependencies
 
@@ -154,6 +182,17 @@ OPENAI_API_KEY=your_openai_api_key
 
 The key is only needed for audio fallback; caption retrieval does not require it. Add the same variable to the Vercel project's Environment Variables for the deployment environments that need audio fallback. Never commit the key.
 
+For the optional Python service, configure these values:
+
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `PYTHON_TRANSCRIPT_API_URL` | Next.js deployment | Base URL of the deployed Python service |
+| `TRANSCRIPT_SERVICE_TOKEN` | Both deployments | Shared secret used to authenticate Next.js requests |
+| `YOUTUBE_TRANSCRIPT_PROXY_USERNAME` | Python service | Residential proxy account username |
+| `YOUTUBE_TRANSCRIPT_PROXY_PASSWORD` | Python service | Residential proxy account password |
+| `YOUTUBE_TRANSCRIPT_PROXY_URL` | Python service, alternative | Generic HTTP/HTTPS proxy URL |
+| `REQUIRE_YOUTUBE_PROXY` | Python service, optional | Require a proxy; defaults to true on Vercel |
+
 ```bash
 npm install
 npm run dev
@@ -173,4 +212,4 @@ The API route uses the Node.js runtime and declares a maximum function duration 
 
 ## Verification Status
 
-The latest `npm run build` completed successfully. Local checks confirmed that `youtube-transcript` can retrieve captions for tested public videos. For `EEPKv7ciUQY`, the iOS InnerTube caption-track fallback also parsed 45 Hindi segments. Cloud-hosted caption and audio access still depends on YouTube's response to the Vercel function's requests; redeploy and inspect the caption-fallback log to verify production behavior.
+The latest `npm run build` completed successfully. Local checks confirmed that `youtube-transcript` and the iOS InnerTube caption-track fallback can retrieve 45 Hindi segments for `EEPKv7ciUQY`. The Python service has syntax validation but still needs deployment, a configured proxy, and an end-to-end request to verify cloud access.

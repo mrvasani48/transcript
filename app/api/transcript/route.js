@@ -31,6 +31,61 @@ function extractVideoId(url) {
   }
 }
 
+async function fetchPythonTranscript(videoId, lang) {
+  const serviceUrl = process.env.PYTHON_TRANSCRIPT_API_URL?.trim().replace(/\/$/, "");
+  if (!serviceUrl) return null;
+
+  const token = process.env.TRANSCRIPT_SERVICE_TOKEN?.trim();
+  if (!token) {
+    throw new Error("TRANSCRIPT_SERVICE_TOKEN is not configured");
+  }
+
+  const response = await fetch(`${serviceUrl}/transcript`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Transcript-Service-Token": token,
+    },
+    body: JSON.stringify({ video_id: videoId, lang }),
+    signal: AbortSignal.timeout(50000),
+  });
+
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    const detail = result.detail;
+    console.error("Python transcript service failed:", {
+      status: response.status,
+      detail: typeof detail === "string" ? detail : undefined,
+    });
+    const message = response.status === 404
+      ? "No captions are available in the Python transcript service."
+      : "The Python transcript service could not retrieve captions. Check its proxy configuration and logs.";
+    return NextResponse.json({ error: message }, { status: response.status === 404 ? 422 : 502 });
+  }
+
+  return NextResponse.json(await response.json());
+}
+
+async function handlePythonTranscriptService(videoId, lang) {
+  try {
+    return await fetchPythonTranscript(videoId, lang);
+  } catch (error) {
+    const missingToken = error.message === "TRANSCRIPT_SERVICE_TOKEN is not configured";
+    console.error("Python transcript service request failed:", {
+      reason: missingToken ? "missing_service_token" : error.name,
+      code: error.cause?.code,
+    });
+    return NextResponse.json(
+      {
+        error: missingToken
+          ? "Set TRANSCRIPT_SERVICE_TOKEN in both the Next.js and Python service environments."
+          : "The Python transcript service is unavailable. Check its URL and deployment logs.",
+      },
+      { status: missingToken ? 500 : 502 }
+    );
+  }
+}
+
 async function fetchCaptionsViaInnerTube(videoId, lang) {
   const youtube = await Innertube.create({ retrieve_player: false });
   const info = await youtube.getInfo(videoId, { client: "IOS" });
@@ -188,6 +243,10 @@ export async function POST(request) {
       { error: "Couldn't find a valid YouTube video ID in that link." },
       { status: 400 }
     );
+  }
+
+  if (process.env.PYTHON_TRANSCRIPT_API_URL) {
+    return handlePythonTranscriptService(videoId, lang);
   }
 
   try {

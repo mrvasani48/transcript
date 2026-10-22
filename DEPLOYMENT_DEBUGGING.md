@@ -23,6 +23,8 @@ Deploy the latest code, then check Vercel logs for `Caption fetch failed`. The l
 
 If the caption request is blocked from Vercel, the code alone may not resolve it; YouTube may restrict requests from the function's egress IP. Audio fallback may likewise be denied. A proxy or a transcript provider accessible from the deployment environment may be required.
 
+The separate `transcript-python/` service is now available as an option. It uses `youtube-transcript-api`, which explicitly documents cloud-provider IP blocking and supports rotating residential proxies. Deploy it separately, configure a proxy on that service, set `TRANSCRIPT_SERVICE_TOKEN` in both deployments, and set `PYTHON_TRANSCRIPT_API_URL` in the Next.js deployment. A Python runtime without a proxy may encounter the same YouTube restriction.
+
 ## Local Verification
 
 ```bash

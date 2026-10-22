@@ -33,5 +33,6 @@ Open http://localhost:3000
 - To enable audio fallback, create a `.env.local` file with
   `OPENAI_API_KEY=your_key_here`, then restart the dev server. Audio uploads are
   limited to 25 MB by the Whisper API.
-- Deploys anywhere Next.js does (Vercel, Node server, Docker) since the
-  transcript fetch runs server-side in the Route Handler, not the browser.
+- YouTube may block caption or audio requests from cloud-provider IPs. For
+  deployments that need a proxy-backed transcript path, see
+  [PROJECT_GUIDE.md](PROJECT_GUIDE.md) for the optional Python service setup.
